@@ -172,6 +172,12 @@ def main_bot_logic():
                             send_telegram_message(msg)
                             last_sent_signals[asset] = current_ts
                             print(f"Signal sent for {asset}")
+                            if TRADING_START <= now.hour < TRADING_END:
+            for asset in ASSETS:
+                df = fetch_candles(asset, count=100)
+                time.sleep(2)  # <--- ADD THIS LINE to avoid getting blocked again
+                if df.empty or len(df) < 30:
+                    continue
 
         time.sleep(TIMEFRAME)
 
@@ -179,5 +185,15 @@ if __name__ == "__main__":
     # 1. Start Web Server in a background thread
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # 2. Start Bot Logic in the main thread
+    # 2. Send "Live" notification to Telegram
+    startup_msg = (
+        "🤖 **Breakout Bot is Live!**\n"
+        f"Start Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+        f"Assets Monitored: {len(ASSETS)}\n"
+        "Status: Scanning for Triangle Breakouts..."
+    )
+    send_telegram_message(startup_msg)
+    print("Startup message sent to Telegram.")
+    
+    # 3. Start Bot Logic in the main thread
     main_bot_logic()
