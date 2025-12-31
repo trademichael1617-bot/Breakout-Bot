@@ -1,0 +1,4 @@
+pandas==2.1.1
+numpy==1.26.2
+requests==2.32.3
+TA-Lib==0.4.27
