@@ -12,11 +12,13 @@ from flask import Flask
 # ----------------- Configuration (Render Env Vars) -----------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+HEARTBEAT_URL = os.getenv("HEARTBEAT_URL")
 
-# Safety check to ensure the bot doesn't start without credentials
+# Safety check
 if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-    print("CRITICAL ERROR: Telegram credentials not found in environment variables!")
+    print("CRITICAL ERROR: Telegram credentials not found!")
     exit(1)
+
 ASSETS = [
     "EURUSD=X", "AUDCHF=X", "GBPCHF=X", "EURCAD=X", "AUDCAD=X", 
     "USDCHF=X", "CADCHF=X", "AUDJPY=X", "CADJPY=X", "EURJPY=X", 
@@ -61,6 +63,13 @@ session.headers.update({
 })
 
 # ----------------- Helper Functions -----------------
+
+def send_heartbeat():
+    if HEARTBEAT_URL:
+        try:
+            requests.get(HEARTBEAT_URL, timeout=10)
+        except Exception as e:
+            print(f"Heartbeat error: {e}")
 
 def send_telegram_message(message):
     try:
@@ -127,13 +136,14 @@ def check_breakout(df):
 def main_bot_logic():
     print("Bot logic started...")
     while True:
+        # Signal Better Stack that the loop is alive
+        send_heartbeat()
+        
         now = datetime.now(timezone.utc)
         
         if TRADING_START <= now.hour < TRADING_END:
             for asset in ASSETS:
                 df = fetch_candles(asset, count=100)
-                
-                # Small delay between assets to prevent Yahoo block
                 time.sleep(2) 
                 
                 if df.empty or len(df) < 30:
@@ -170,16 +180,12 @@ def main_bot_logic():
         time.sleep(TIMEFRAME)
 
 if __name__ == "__main__":
-    # 1. Start Web Server
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # 2. Startup Notification
     startup_msg = (
         "🤖 *Breakout Bot is Live!*\n"
-        f"Time: `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC`\n"
-        f"Monitoring `{len(ASSETS)}` pairs."
+        f"Time: `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC`"
     )
     send_telegram_message(startup_msg)
     
-    # 3. Start Logic
     main_bot_logic()
