@@ -33,6 +33,8 @@ SUPERTREND_MULTIPLIER = 2
 MIN_CONSOLIDATION_CANDLES = 20
 BREAKOUT_LOOKBACK = 5  
 
+last_sent_signals = {}
+
 # ----------------- Web Server for Render -----------------
 app = Flask(__name__)
 
@@ -41,14 +43,10 @@ def health_check():
     return "Bot is running", 200
 
 def run_web_server():
-    # Render provides a PORT environment variable, default to 10000
     app.run(host='0.0.0.0', port=10000)
 
 # ----------------- Setup Session -----------------
-# Replace your current session setup with this:
-
 session = requests.Session()
-# Add these specific headers to mimic a real browser session
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -57,14 +55,12 @@ session.headers.update({
     'Referer': 'https://finance.yahoo.com'
 })
 
-# In your fetch_candles function, ensure it looks like this:
-ticker = yf.Ticker(asset, session=session)
 # ----------------- Helper Functions -----------------
 
 def send_telegram_message(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
         requests.post(url, data=payload, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
@@ -72,16 +68,10 @@ def send_telegram_message(message):
 def fetch_candles(asset, count=100):
     try:
         ticker = yf.Ticker(asset, session=session)
-        # Fetching 2 days to ensure enough data for indicators
         df = ticker.history(period="2d", interval="1m").tail(count)
-        
         if df.empty:
             return pd.DataFrame()
-        
-        df = df.rename(columns={
-            'Open': 'open', 'High': 'high', 'Low': 'low', 
-            'Close': 'close', 'Volume': 'volume'
-        })
+        df = df.rename(columns={'Open': 'open', 'High': 'high', 'Low': 'low', 'Close': 'close', 'Volume': 'volume'})
         return df
     except Exception as e:
         print(f"Error fetching {asset}: {e}")
@@ -92,10 +82,8 @@ def supertrend(df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
     atr = ta.ATR(df['high'], df['low'], df['close'], timeperiod=period)
     upperband = hl2 + multiplier * atr
     lowerband = hl2 - multiplier * atr
-    
     direction = np.zeros(len(df))
     curr_dir = 1
-    
     for i in range(1, len(df)):
         if df['close'].iloc[i] > upperband.iloc[i-1]:
             curr_dir = 1
@@ -109,10 +97,8 @@ def detect_triangle_type(df):
     highs = recent['high'].values
     lows = recent['low'].values
     x = np.arange(len(highs))
-
     high_slope, _ = np.polyfit(x, highs, 1)
     low_slope, _ = np.polyfit(x, lows, 1)
-
     if abs(high_slope) < 0.00005 and low_slope > 0.00005:
         return "Ascending"
     elif abs(low_slope) < 0.00005 and high_slope < -0.00005:
@@ -125,7 +111,6 @@ def check_breakout(df):
     last_close = df['close'].iloc[-1]
     prev_high = df['high'].iloc[-(BREAKOUT_LOOKBACK+1):-1].max()
     prev_low = df['low'].iloc[-(BREAKOUT_LOOKBACK+1):-1].min()
-    
     if last_close > prev_high:
         return "BUY"
     elif last_close < prev_low:
@@ -142,6 +127,10 @@ def main_bot_logic():
         if TRADING_START <= now.hour < TRADING_END:
             for asset in ASSETS:
                 df = fetch_candles(asset, count=100)
+                
+                # Small delay between assets to prevent Yahoo block
+                time.sleep(2) 
+                
                 if df.empty or len(df) < 30:
                     continue
 
@@ -168,32 +157,24 @@ def main_bot_logic():
 
                         current_ts = time.time()
                         if confirm and (asset not in last_sent_signals or (current_ts - last_sent_signals[asset]) > 900):
-                            msg = f"🚀 {signal} Alert!\nAsset: {asset}\nPattern: {triangle_type} Triangle\nPrice: {df['close'].iloc[-1]:.5f}\nTime: {now.strftime('%H:%M:%S')} UTC"
+                            msg = f"🚀 *{signal} Alert!*\nAsset: `{asset}`\nPattern: {triangle_type} Triangle\nPrice: {df['close'].iloc[-1]:.5f}\nTime: {now.strftime('%H:%M:%S')} UTC"
                             send_telegram_message(msg)
                             last_sent_signals[asset] = current_ts
                             print(f"Signal sent for {asset}")
-                            if TRADING_START <= now.hour < TRADING_END:
-            for asset in ASSETS:
-                df = fetch_candles(asset, count=100)
-                time.sleep(2)  # <--- ADD THIS LINE to avoid getting blocked again
-                if df.empty or len(df) < 30:
-                    continue
 
         time.sleep(TIMEFRAME)
 
 if __name__ == "__main__":
-    # 1. Start Web Server in a background thread
+    # 1. Start Web Server
     threading.Thread(target=run_web_server, daemon=True).start()
     
-    # 2. Send "Live" notification to Telegram
+    # 2. Startup Notification
     startup_msg = (
-        "🤖 **Breakout Bot is Live!**\n"
-        f"Start Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"Assets Monitored: {len(ASSETS)}\n"
-        "Status: Scanning for Triangle Breakouts..."
+        "🤖 *Breakout Bot is Live!*\n"
+        f"Time: `{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC`\n"
+        f"Monitoring `{len(ASSETS)}` pairs."
     )
     send_telegram_message(startup_msg)
-    print("Startup message sent to Telegram.")
     
-    # 3. Start Bot Logic in the main thread
+    # 3. Start Logic
     main_bot_logic()
