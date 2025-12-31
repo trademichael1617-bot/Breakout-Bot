@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 import requests
@@ -8,10 +9,14 @@ import talib as ta
 import yfinance as yf
 from flask import Flask
 
-# ----------------- Configuration -----------------
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+# ----------------- Configuration (Render Env Vars) -----------------
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Safety check to ensure the bot doesn't start without credentials
+if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    print("CRITICAL ERROR: Telegram credentials not found in environment variables!")
+    exit(1)
 ASSETS = [
     "EURUSD=X", "AUDCHF=X", "GBPCHF=X", "EURCAD=X", "AUDCAD=X", 
     "USDCHF=X", "CADCHF=X", "AUDJPY=X", "CADJPY=X", "EURJPY=X", 
