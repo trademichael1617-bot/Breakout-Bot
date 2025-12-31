@@ -27,9 +27,8 @@ MACD_SIGNAL = 9
 SUPERTREND_PERIOD = 5
 SUPERTREND_MULTIPLIER = 2
 
-# Minimum candles for triangle consolidation
 MIN_CONSOLIDATION_CANDLES = 20
-
+BREAKOUT_LOOKBACK = 5  # recent candles for breakout detection
 # -------------------------------------------------
 
 def send_telegram_message(message):
@@ -40,49 +39,54 @@ def send_telegram_message(message):
 # Placeholder: Fetch candle data from Pocket Option API / Web automation
 def fetch_candles(asset, count=100):
     """
-    Should return a pandas DataFrame with columns: 
-    ['time','open','high','low','close','volume']
+    Must return pandas DataFrame with ['time','open','high','low','close','volume']
     """
-    # Replace this with actual API/websocket fetch
-    return pd.DataFrame()
+    return pd.DataFrame()  # replace with actual API/websocket call
 
 # Calculate SuperTrend
 def supertrend(df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
     hl2 = (df['high'] + df['low']) / 2
     atr = ta.ATR(df['high'], df['low'], df['close'], timeperiod=period)
-    final_upperband = hl2 + (multiplier * atr)
-    final_lowerband = hl2 - (multiplier * atr)
-    supertrend = pd.Series(np.zeros(len(df)))
-    direction = 1  # 1 for uptrend, -1 for downtrend
+    upperband = hl2 + multiplier * atr
+    lowerband = hl2 - multiplier * atr
+    supertrend_series = pd.Series(np.zeros(len(df)))
+    direction = 1
 
     for i in range(1, len(df)):
-        if df['close'].iloc[i] > final_upperband.iloc[i-1]:
+        if df['close'].iloc[i] > upperband.iloc[i-1]:
             direction = 1
-        elif df['close'].iloc[i] < final_lowerband.iloc[i-1]:
+        elif df['close'].iloc[i] < lowerband.iloc[i-1]:
             direction = -1
-        supertrend.iloc[i] = direction
+        supertrend_series.iloc[i] = direction
 
-    return supertrend
+    return supertrend_series
 
-# Detect triangle consolidation
-def detect_triangle(df):
+# Detect triangle type
+def detect_triangle_type(df):
     recent = df[-MIN_CONSOLIDATION_CANDLES:]
     highs = recent['high'].values
     lows = recent['low'].values
     if len(highs) < 2:
-        return False
-    # Check convergence: highs decreasing, lows increasing
+        return None
+
+    # Linear regression slopes
     high_slope = np.polyfit(range(len(highs)), highs, 1)[0]
     low_slope = np.polyfit(range(len(lows)), lows, 1)[0]
-    if high_slope < 0 and low_slope > 0:
-        return True
-    return False
+
+    # Determine triangle type
+    if abs(high_slope) < 0.0001 and low_slope > 0:
+        return "Ascending"
+    elif abs(low_slope) < 0.0001 and high_slope < 0:
+        return "Descending"
+    elif high_slope < 0 and low_slope > 0:
+        return "Symmetrical"
+    return None
 
 # Check breakout
 def check_breakout(df):
     last_close = df['close'].iloc[-1]
-    recent_high = df['high'].iloc[-5:].max()
-    recent_low = df['low'].iloc[-5:].min()
+    recent_high = df['high'].iloc[-BREAKOUT_LOOKBACK:].max()
+    recent_low = df['low'].iloc[-BREAKOUT_LOOKBACK:].min()
     if last_close > recent_high:
         return "BUY"
     elif last_close < recent_low:
@@ -106,10 +110,10 @@ while True:
             df['supertrend'] = supertrend(df)
 
             # Triangle detection
-            if detect_triangle(df):
+            triangle_type = detect_triangle_type(df)
+            if triangle_type:
                 signal = check_breakout(df)
                 if signal:
-                    # Confirm with indicators
                     last_rsi = df['rsi'].iloc[-1]
                     last_macd = df['macd'].iloc[-1]
                     last_macd_signal = df['macd_signal'].iloc[-1]
@@ -122,9 +126,7 @@ while True:
                         confirm = True
 
                     if confirm:
-                        msg = f"{signal} signal for {asset} at {df['close'].iloc[-1]:.5f} (Time: {now.strftime('%H:%M:%S')} GMT)"
+                        msg = f"{signal} {triangle_type} Triangle breakout for {asset} at {df['close'].iloc[-1]:.5f} (Time: {now.strftime('%H:%M:%S')} GMT)"
                         send_telegram_message(msg)
-    
-    # Wait for next candle
-    time.sleep(TIMEFRAME)
 
+    time.sleep(TIMEFRAME)
