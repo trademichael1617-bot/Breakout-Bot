@@ -2,22 +2,25 @@
 # Exit on error
 set -o errexit
 
-# 1. Download and install TA-Lib C Library
-wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-tar -xzf ta-lib-0.4.0-src.tar.gz
+# 1. Download and Build TA-Lib C Library locally
+if [ ! -d "ta-lib" ]; then
+  wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+  tar -xzf ta-lib-0.4.0-src.tar.gz
+fi
+
 cd ta-lib/
-./configure --prefix=/usr
+# Use a local path for installation to avoid permission issues
+./configure --prefix=$HOME/target
 make
 make install
 cd ..
 
-# 2. Clean up source files to save space
-rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+# 2. Tell Python where the library is located
+export TA_INCLUDE_PATH=$HOME/target/include
+export TA_LIBRARY_PATH=$HOME/target/lib
+export LDFLAGS="-L$HOME/target/lib"
+export CPPFLAGS="-I$HOME/target/include"
 
 # 3. Install Python dependencies
-# We set include/library paths so the pip install can see the C headers
-export TA_INCLUDE_PATH="/usr/include"
-export TA_LIBRARY_PATH="/usr/lib"
-
 pip install --upgrade pip
 pip install -r requirements.txt
