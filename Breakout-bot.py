@@ -1,10 +1,12 @@
 import time
+import threading
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 import talib as ta
 import yfinance as yf
+from flask import Flask
 
 # ----------------- Configuration -----------------
 TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
@@ -16,9 +18,9 @@ ASSETS = [
     "USDJPY=X", "GBPUSD=X", "EURGBP=X", "GBPJPY=X", "GBPAUD=X"
 ]
 
-TIMEFRAME = 60  # 1-minute candles
-TRADING_START = 10  # 10 AM GMT
-TRADING_END = 22    # Adjusted to 10 PM GMT for better coverage
+TIMEFRAME = 60  
+TRADING_START = 10  
+TRADING_END = 22    
 
 # Indicator settings
 RSI_PERIOD = 10
@@ -30,27 +32,45 @@ SUPERTREND_MULTIPLIER = 2
 
 MIN_CONSOLIDATION_CANDLES = 20
 BREAKOUT_LOOKBACK = 5  
-# -------------------------------------------------
 
-# Track sent signals to avoid spamming
+# ----------------- Web Server for Render -----------------
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is running", 200
+
+def run_web_server():
+    # Render provides a PORT environment variable, default to 10000
+    app.run(host='0.0.0.0', port=10000)
+
+# ----------------- Setup Session -----------------
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+})
+
 last_sent_signals = {}
+
+# ----------------- Helper Functions -----------------
 
 def send_telegram_message(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        requests.post(url, data=payload)
+        requests.post(url, data=payload, timeout=10)
     except Exception as e:
         print(f"Telegram error: {e}")
 
 def fetch_candles(asset, count=100):
     try:
-        ticker = yf.Ticker(asset)
-        df = ticker.history(period="1d", interval="1m").tail(count)
+        ticker = yf.Ticker(asset, session=session)
+        # Fetching 2 days to ensure enough data for indicators
+        df = ticker.history(period="2d", interval="1m").tail(count)
+        
         if df.empty:
             return pd.DataFrame()
         
-        # Standardize columns for TA-Lib
         df = df.rename(columns={
             'Open': 'open', 'High': 'high', 'Low': 'low', 
             'Close': 'close', 'Volume': 'volume'
@@ -86,7 +106,6 @@ def detect_triangle_type(df):
     high_slope, _ = np.polyfit(x, highs, 1)
     low_slope, _ = np.polyfit(x, lows, 1)
 
-    # Thresholds for slope detection
     if abs(high_slope) < 0.00005 and low_slope > 0.00005:
         return "Ascending"
     elif abs(low_slope) < 0.00005 and high_slope < -0.00005:
@@ -97,7 +116,6 @@ def detect_triangle_type(df):
 
 def check_breakout(df):
     last_close = df['close'].iloc[-1]
-    # Look back at high/low before the current candle
     prev_high = df['high'].iloc[-(BREAKOUT_LOOKBACK+1):-1].max()
     prev_low = df['low'].iloc[-(BREAKOUT_LOOKBACK+1):-1].min()
     
@@ -107,44 +125,52 @@ def check_breakout(df):
         return "SELL"
     return None
 
-print("Bot started...")
+# ----------------- Main Loop -----------------
 
-while True:
-    now = datetime.utcnow()
-    if TRADING_START <= now.hour < TRADING_END:
-        for asset in ASSETS:
-            df = fetch_candles(asset, count=100)
-            if df.empty or len(df) < 30:
-                continue
+def main_bot_logic():
+    print("Bot logic started...")
+    while True:
+        now = datetime.now(timezone.utc)
+        
+        if TRADING_START <= now.hour < TRADING_END:
+            for asset in ASSETS:
+                df = fetch_candles(asset, count=100)
+                if df.empty or len(df) < 30:
+                    continue
 
-            # Indicators
-            df['rsi'] = ta.RSI(df['close'], RSI_PERIOD)
-            macd, macd_signal, _ = ta.MACD(df['close'], MACD_FAST, MACD_SLOW, MACD_SIGNAL)
-            df['macd'] = macd
-            df['macd_signal'] = macd_signal
-            df['supertrend'] = supertrend(df)
+                df['rsi'] = ta.RSI(df['close'], RSI_PERIOD)
+                macd, macd_signal, _ = ta.MACD(df['close'], MACD_FAST, MACD_SLOW, MACD_SIGNAL)
+                df['macd'] = macd
+                df['macd_signal'] = macd_signal
+                df['supertrend'] = supertrend(df)
 
-            triangle_type = detect_triangle_type(df)
-            if triangle_type:
-                signal = check_breakout(df)
-                if signal:
-                    last_rsi = df['rsi'].iloc[-1]
-                    last_macd = df['macd'].iloc[-1]
-                    last_macd_signal = df['macd_signal'].iloc[-1]
-                    last_st = df['supertrend'].iloc[-1]
+                triangle_type = detect_triangle_type(df)
+                if triangle_type:
+                    signal = check_breakout(df)
+                    if signal:
+                        last_rsi = df['rsi'].iloc[-1]
+                        last_macd = df['macd'].iloc[-1]
+                        last_macd_signal = df['macd_signal'].iloc[-1]
+                        last_st = df['supertrend'].iloc[-1]
 
-                    confirm = False
-                    if signal == "BUY" and last_rsi > 50 and last_macd > last_macd_signal and last_st == 1:
-                        confirm = True
-                    elif signal == "SELL" and last_rsi < 50 and last_macd < last_macd_signal and last_st == -1:
-                        confirm = True
+                        confirm = False
+                        if signal == "BUY" and last_rsi > 50 and last_macd > last_macd_signal and last_st == 1:
+                            confirm = True
+                        elif signal == "SELL" and last_rsi < 50 and last_macd < last_macd_signal and last_st == -1:
+                            confirm = True
 
-                    # Cooldown check: 15 minutes per asset
-                    current_ts = time.time()
-                    if confirm and (asset not in last_sent_signals or (current_ts - last_sent_signals[asset]) > 900):
-                        msg = f"🚀 {signal} Alert!\nAsset: {asset}\nPattern: {triangle_type} Triangle\nPrice: {df['close'].iloc[-1]:.5f}\nTime: {now.strftime('%H:%M:%S')} UTC"
-                        send_telegram_message(msg)
-                        last_sent_signals[asset] = current_ts
-                        print(f"Signal sent for {asset}")
+                        current_ts = time.time()
+                        if confirm and (asset not in last_sent_signals or (current_ts - last_sent_signals[asset]) > 900):
+                            msg = f"🚀 {signal} Alert!\nAsset: {asset}\nPattern: {triangle_type} Triangle\nPrice: {df['close'].iloc[-1]:.5f}\nTime: {now.strftime('%H:%M:%S')} UTC"
+                            send_telegram_message(msg)
+                            last_sent_signals[asset] = current_ts
+                            print(f"Signal sent for {asset}")
 
-    time.sleep(TIMEFRAME)
+        time.sleep(TIMEFRAME)
+
+if __name__ == "__main__":
+    # 1. Start Web Server in a background thread
+    threading.Thread(target=run_web_server, daemon=True).start()
+    
+    # 2. Start Bot Logic in the main thread
+    main_bot_logic()
