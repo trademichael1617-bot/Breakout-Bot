@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import talib as ta
+import yfinance as yf
 
 # ----------------- Configuration -----------------
 TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
@@ -17,7 +18,7 @@ ASSETS = [
 
 TIMEFRAME = 60  # 1-minute candles
 TRADING_START = 10  # 10 AM GMT
-TRADING_END = 12    # 12 PM GMT
+TRADING_END = 22    # Adjusted to 10 PM GMT for better coverage
 
 # Indicator settings
 RSI_PERIOD = 10
@@ -28,105 +29,66 @@ SUPERTREND_PERIOD = 5
 SUPERTREND_MULTIPLIER = 2
 
 MIN_CONSOLIDATION_CANDLES = 20
-BREAKOUT_LOOKBACK = 5  # recent candles for breakout detection
+BREAKOUT_LOOKBACK = 5  
 # -------------------------------------------------
 
+# Track sent signals to avoid spamming
+last_sent_signals = {}
+
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    requests.post(url, data=payload)
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
-# Placeholder: Fetch candle data from Pocket Option API / Web automation
 def fetch_candles(asset, count=100):
-    """
-    Must return pandas DataFrame with ['time','open','high','low','close','volume']
-    """
-    return pd.DataFrame()  # replace with actual API/websocket call
+    try:
+        ticker = yf.Ticker(asset)
+        df = ticker.history(period="1d", interval="1m").tail(count)
+        if df.empty:
+            return pd.DataFrame()
+        
+        # Standardize columns for TA-Lib
+        df = df.rename(columns={
+            'Open': 'open', 'High': 'high', 'Low': 'low', 
+            'Close': 'close', 'Volume': 'volume'
+        })
+        return df
+    except Exception as e:
+        print(f"Error fetching {asset}: {e}")
+        return pd.DataFrame()
 
-# Calculate SuperTrend
 def supertrend(df, period=SUPERTREND_PERIOD, multiplier=SUPERTREND_MULTIPLIER):
     hl2 = (df['high'] + df['low']) / 2
     atr = ta.ATR(df['high'], df['low'], df['close'], timeperiod=period)
     upperband = hl2 + multiplier * atr
     lowerband = hl2 - multiplier * atr
-    supertrend_series = pd.Series(np.zeros(len(df)))
-    direction = 1
-
+    
+    direction = np.zeros(len(df))
+    curr_dir = 1
+    
     for i in range(1, len(df)):
         if df['close'].iloc[i] > upperband.iloc[i-1]:
-            direction = 1
+            curr_dir = 1
         elif df['close'].iloc[i] < lowerband.iloc[i-1]:
-            direction = -1
-        supertrend_series.iloc[i] = direction
+            curr_dir = -1
+        direction[i] = curr_dir
+    return pd.Series(direction, index=df.index)
 
-    return supertrend_series
-
-# Detect triangle type
 def detect_triangle_type(df):
-    recent = df[-MIN_CONSOLIDATION_CANDLES:]
+    recent = df.tail(MIN_CONSOLIDATION_CANDLES)
     highs = recent['high'].values
     lows = recent['low'].values
-    if len(highs) < 2:
-        return None
+    x = np.arange(len(highs))
 
-    # Linear regression slopes
-    high_slope = np.polyfit(range(len(highs)), highs, 1)[0]
-    low_slope = np.polyfit(range(len(lows)), lows, 1)[0]
+    high_slope, _ = np.polyfit(x, highs, 1)
+    low_slope, _ = np.polyfit(x, lows, 1)
 
-    # Determine triangle type
-    if abs(high_slope) < 0.0001 and low_slope > 0:
+    # Thresholds for slope detection
+    if abs(high_slope) < 0.00005 and low_slope > 0.00005:
         return "Ascending"
-    elif abs(low_slope) < 0.0001 and high_slope < 0:
+    elif abs(low_slope) < 0.00005 and high_slope < -0.00005:
         return "Descending"
-    elif high_slope < 0 and low_slope > 0:
-        return "Symmetrical"
-    return None
-
-# Check breakout
-def check_breakout(df):
-    last_close = df['close'].iloc[-1]
-    recent_high = df['high'].iloc[-BREAKOUT_LOOKBACK:].max()
-    recent_low = df['low'].iloc[-BREAKOUT_LOOKBACK:].min()
-    if last_close > recent_high:
-        return "BUY"
-    elif last_close < recent_low:
-        return "SELL"
-    return None
-
-# Main loop
-while True:
-    now = datetime.utcnow()
-    if TRADING_START <= now.hour < TRADING_END:
-        for asset in ASSETS:
-            df = fetch_candles(asset, count=100)
-            if df.empty or len(df) < MIN_CONSOLIDATION_CANDLES:
-                continue
-
-            # Indicators
-            df['rsi'] = ta.RSI(df['close'], RSI_PERIOD)
-            macd, macd_signal, _ = ta.MACD(df['close'], fastperiod=MACD_FAST, slowperiod=MACD_SLOW, signalperiod=MACD_SIGNAL)
-            df['macd'] = macd
-            df['macd_signal'] = macd_signal
-            df['supertrend'] = supertrend(df)
-
-            # Triangle detection
-            triangle_type = detect_triangle_type(df)
-            if triangle_type:
-                signal = check_breakout(df)
-                if signal:
-                    last_rsi = df['rsi'].iloc[-1]
-                    last_macd = df['macd'].iloc[-1]
-                    last_macd_signal = df['macd_signal'].iloc[-1]
-                    last_supertrend = df['supertrend'].iloc[-1]
-
-                    confirm = False
-                    if signal == "BUY" and last_rsi > 50 and last_macd > last_macd_signal and last_supertrend == 1:
-                        confirm = True
-                    elif signal == "SELL" and last_rsi < 50 and last_macd < last_macd_signal and last_supertrend == -1:
-                        confirm = True
-
-                    if confirm:
-                        msg = f"{signal} {triangle_type} Triangle breakout for {asset} at {df['close'].iloc[-1]:.5f} (Time: {now.strftime('%H:%M:%S')} GMT)"
-                        send_telegram_message(msg)
-
-    time.sleep(TIMEFRAME)
+    elif high_slope < -0.00005 and low_slope > 0.0
