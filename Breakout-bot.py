@@ -45,13 +45,20 @@ def run_web_server():
     app.run(host='0.0.0.0', port=10000)
 
 # ----------------- Setup Session -----------------
+# Replace your current session setup with this:
+
 session = requests.Session()
+# Add these specific headers to mimic a real browser session
 session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Origin': 'https://finance.yahoo.com',
+    'Referer': 'https://finance.yahoo.com'
 })
 
-last_sent_signals = {}
-
+# In your fetch_candles function, ensure it looks like this:
+ticker = yf.Ticker(asset, session=session)
 # ----------------- Helper Functions -----------------
 
 def send_telegram_message(message):
